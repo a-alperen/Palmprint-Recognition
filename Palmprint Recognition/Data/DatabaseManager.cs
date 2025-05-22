@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using System.Text;
 
 namespace Palmprint_Recognition.Data
 {
@@ -32,28 +33,29 @@ namespace Palmprint_Recognition.Data
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 var parts = line.Split(',');
                 var id = parts[0];
-                var vec = parts.Skip(1).Select(float.Parse).ToArray();
+                // Ondalık ayırıcı olarak nokta kullanan InvariantCulture ile parse ediyoruz
+                var vec = parts
+                    .Skip(1)
+                    .Select(tok => float.Parse(tok, CultureInfo.InvariantCulture))
+                    .ToArray();
                 _db[id] = vec;
             }
         }
 
         public void Save(string id, float[] features)
         {
-            if (_db.ContainsKey(id))
-                throw new InvalidOperationException($"ID '{id}' already exists.");
-
-            // Belleğe ekle
+            // Belleğe ekle ya da güncelle
             _db[id] = features;
 
-            // Dosyaya sadece bu kaydı ekle (append: true)
-            var line = id + "," +
-            string.Join(",",
-                features.Select(f =>
-                    f.ToString("G6", CultureInfo.InvariantCulture)
-                )
-            );
-
-            File.AppendAllText(_filePath, line + Environment.NewLine);
+            // Dosyayı baştan yaz: böylece eski raw satırlar kalmaz
+            using var sw = new StreamWriter(_filePath, append: false, encoding: Encoding.UTF8);
+            foreach (var kv in _db)
+            {
+                string line = kv.Key + "," +
+                              string.Join(",", kv.Value
+                                                .Select(f => f.ToString("G6", CultureInfo.InvariantCulture)));
+                sw.WriteLine(line);
+            }
         }
     }
 }

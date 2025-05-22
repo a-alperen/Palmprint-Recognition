@@ -11,89 +11,104 @@ namespace Palmprint_Recognition.Recognition
         private readonly DatabaseManager _dbManager;
         private readonly RawFeatureManager _rawFtManager;
         private readonly FeatureExtractor _featExt;
-        private readonly int _M;
-        private readonly List<float[]> _allDctFeatures = new();
-        private float[] _globalMin;
-        private float[] _globalMax;
-        private int[] _topIdx;
 
-        public Recognizer(DatabaseManager dbManager,RawFeatureManager rawMgr, FeatureExtractor featExt, int M = 30)
+        private readonly int _blockSize;
+        public Recognizer(DatabaseManager dbManager, RawFeatureManager rawMgr, FeatureExtractor featExt, int blockSize)
         {
             _dbManager = dbManager;
             _rawFtManager = rawMgr;
             _featExt = featExt;
-            _M = M;
+            _blockSize = blockSize;
         }
 
-        public void Initialize(IEnumerable<float[]> rawFeatures)
-        {
-            _allDctFeatures.Clear();
-            _allDctFeatures.AddRange(rawFeatures);
-            if (_allDctFeatures.Count > 0)
-                _featExt.ComputeGlobalMinMax(_allDctFeatures, out _globalMin, out _globalMax);
-            if (_allDctFeatures.Count >= _M)
-            {
-                var norm = _allDctFeatures.Select(f => _featExt.MinMaxNormalize(f, _globalMin, _globalMax)).ToArray();
-                _topIdx = _featExt.SelectTopIndices(norm, Enumerable.Range(0, norm.Length).ToArray(), _M);
-            }
-        }
-
+        /// <summary>
+        /// Enroll a new user:
+        ///   1) Extract raw DCT features and save to raw database
+        ///   2) L2-normalize features and save to recognition database
+        /// </summary>
         public void Enroll(string id, Mat colorROI)
         {
-            var stdROI = new Mat();
+            using var stdROI = new Mat();
             CvInvoke.Resize(colorROI, stdROI, new Size(128, 128), 0, 0, Inter.Linear);
-            float[] feats = _featExt.ComputeDctFeatures(stdROI, 8);
 
-            _allDctFeatures.Add(feats);
-            _rawFtManager.SaveNew(id, feats);
+            // 1) Raw DCT
+            float[] rawFeats = _featExt.ComputeDctFeatures(stdROI, _blockSize);
+            _rawFtManager.SaveNew(id, rawFeats);
 
-            if (_allDctFeatures.Count == 1)
-            {
-                // Global min/max’i yine feats üzerinden ayarla, topIdx’i de basitçe ilk M indekse set et
-                _globalMin = (float[])feats.Clone();
-                _globalMax = (float[])feats.Clone();
-                _topIdx = Enumerable.Range(0, feats.Length)
-                                     .Take(_M)
-                                     .ToArray();
-
-                // finalVec = orijinal DCT özelliklerinin L2 normalize hali
-                float[] finalVec1 = _featExt.L2Normalize(feats);
-                _dbManager.Save(id, finalVec1);
-                return;
-            }
-            else
-            {
-                _featExt.ComputeGlobalMinMax(_allDctFeatures, out _globalMin, out _globalMax);
-            }
-            var normG = _featExt.MinMaxNormalize(feats, _globalMin, _globalMax);
-            _topIdx = _featExt.SelectTopIndices(_allDctFeatures.Select(f => _featExt.MinMaxNormalize(f, _globalMin, _globalMax)).ToArray(), Enumerable.Range(0, _allDctFeatures.Count).ToArray(), _M);
-            var reduced = _featExt.SelectFeaturesByIndex(normG, _topIdx);
-            var finalVec = _featExt.L2Normalize(reduced);
-            Debug.WriteLine(finalVec);
-            _dbManager.Save(id, finalVec);
+            // 2) Normalise and save
+            float[] normed = _featExt.L2Normalize((float[])rawFeats.Clone());
+            _dbManager.Save(id, normed);
         }
 
-        public string? Recognize(Mat colorROI, float threshold)
+        /// <summary>
+        /// En yakın ID’yi ve cosine benzerlik skorunu döner.
+        /// </summary>
+        /// <param name="colorROI">Giriş ROI</param>
+        /// <param name="threshold">Euclidean eşiği (isteğe bağlı, mesela 0.6f)</param>
+        /// <returns>(ID ve skoru) eşiğin altındaysa ID, değilse null ve 0</returns>
+        public (string? Id, float Similarity) Recognize(Mat colorROI, float distanceThreshold, float similarityThreshold)
         {
-            var stdROI = new Mat();
+            // 1) Standardize ROI size
+            using var stdROI = new Mat();
             CvInvoke.Resize(colorROI, stdROI, new Size(128, 128), 0, 0, Inter.Linear);
-            var feats = _featExt.ComputeDctFeatures(stdROI, 8);
-            var normG = _featExt.MinMaxNormalize(feats, _globalMin, _globalMax);
-            var reduced = _featExt.SelectFeaturesByIndex(normG, _topIdx);
-            if (reduced == null || reduced.Length == 0) return null;
-            var minv = reduced.Min(); var maxv = reduced.Max(); var range = maxv - minv;
-            var normS = reduced.Select(v => range > 1e-6f ? (v - minv) / range : 0f).ToArray();
-            var queryVec = _featExt.L2Normalize(normS);
-            string bestId = null; float bestDist = float.MaxValue;
+
+            // 2) Extract DCT features and L2-normalize
+            float[] rawFeats = _featExt.ComputeDctFeatures(stdROI, _blockSize);
+            float[] queryVec = _featExt.L2Normalize(rawFeats);
+
+            // 3) Compute Euclidean distances to all database vectors
+            var distances = new List<(string Id, float Dist)>();
             foreach (var kv in _dbManager.Records)
             {
-                var dbVec = kv.Value; float dist = 0;
-                for (int i = 0; i < queryVec.Length; i++) dist += (queryVec[i] - dbVec[i]) * (queryVec[i] - dbVec[i]);
-                dist = (float)Math.Sqrt(dist);
-                if (dist < bestDist) { bestDist = dist; bestId = kv.Key; }
+                var dbVec = kv.Value;
+                float distSq = 0f;
+                for (int i = 0; i < queryVec.Length; i++)
+                {
+                    float d = queryVec[i] - dbVec[i];
+                    distSq += d * d;
+                }
+                float dist = (float)Math.Sqrt(distSq);
+                distances.Add((kv.Key, dist));
             }
-            return (bestId != null && bestDist <= threshold) ? bestId : null;
+            // Log all distances for debugging
+            distances.Sort((a, b) => a.Dist.CompareTo(b.Dist));
+            foreach (var (Id, Dist) in distances)
+                Debug.WriteLine($"[Recognize] ID={Id}, Distance={Dist:F6}");
+
+            // 4) Filter out everyone beyond the distanceThreshold,
+            //    then take top-3 closest candidates
+            var topCandidates = distances
+                .Where(x => x.Dist <= distanceThreshold)
+                .OrderBy(x => x.Dist)
+                .Take(3)
+                .ToList();
+
+            // If nobody is within the distance bound, reject immediately
+            if (topCandidates.Count == 0)
+                return (null, 0f);
+            
+            // 5) For each of the top candidates compute cosine similarity,
+            //    and accept the first one above similarityThreshold
+            foreach (var candidate in topCandidates)
+            {
+                float[] dbVec = _dbManager.Records[candidate.Id];
+                float dot = 0f;
+                for (int i = 0; i < queryVec.Length; i++)
+                    dot += queryVec[i] * dbVec[i];
+
+                // dot is in [0,1] after L2-normalization,
+                // multiply by 100 to get percentage
+                float similarity = dot * 100f;
+                Debug.WriteLine($"[Recognize] Candidate={candidate.Id}, EuclidDist={candidate.Dist:F4}, CosineSim={similarity:F2}%");
+
+                if (similarity >= similarityThreshold)
+                    return (candidate.Id, similarity);
+            }
+
+            // 6) None of the top candidates passed the cosine check → reject
+            return (null, 0f);
         }
+
 
     }
 }

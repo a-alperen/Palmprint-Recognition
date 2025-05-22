@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Palmprint_Recognition.Data;
 using Palmprint_Recognition.Extraction;
 using Palmprint_Recognition.Recognition;
+using Emgu.CV.ML;
 
 namespace Palmprint_Recognition
 {
@@ -21,10 +22,15 @@ namespace Palmprint_Recognition
         private readonly ROIExtractor _roiExt;
         private readonly FeatureExtractor _featExt;
         private readonly Recognizer _recognizer;
-        private Mat _inputMat;
-        private Mat _loginMat;
-        private Mat _roi;
-        private Mat _roiLogin;
+
+        private Mat? _inputMat;
+        private Mat? _loginMat;
+        private Mat? _roi;
+        private Mat? _roiLogin;
+
+        private readonly int _blockSize = 12;
+        private readonly float _distanceThreshold = 0.15f;
+        private readonly float _similarityThreshold = 0.85f;
         public Form1()
         {
             InitializeComponent();
@@ -32,15 +38,14 @@ namespace Palmprint_Recognition
             _rawFtManager = new RawFeatureManager("rawdb.csv");
             _roiExt = new ROIExtractor();
             _featExt = new FeatureExtractor();
-            _recognizer = new Recognizer(_db, _rawFtManager, _featExt);
+            _recognizer = new Recognizer(_db, _rawFtManager, _featExt, _blockSize);
+
         }
         private void Form1_Load(object sender, EventArgs e)
         {
             _db.Load();
-            _recognizer.Initialize(_rawFtManager.AllRaw);
             RefreshIdList();
         }
-
 
         /// <summary>
         /// Upload image from file for enrollment
@@ -51,13 +56,21 @@ namespace Palmprint_Recognition
         {
             using var dlg = new OpenFileDialog { Filter = "Image Files|*.jpg;*.png;*.bmp" };
             if (dlg.ShowDialog() != DialogResult.OK) return;
-            _inputMat?.Dispose(); pictureBox1.Image?.Dispose();_roi?.Dispose(); RegisterROIPictureBox.Image?.Dispose();
+
+            _inputMat?.Dispose();
+            pictureBox1.Image?.Dispose();
+            _roi?.Dispose();
+            RegisterROIPictureBox.Image?.Dispose();
+
             using var tmp = CvInvoke.Imread(dlg.FileName, ImreadModes.Color);
-            _inputMat = tmp.Clone(); pictureBox1.Image = _inputMat.ToBitmap();
-            if (!_roiExt.TryExtract(_inputMat, out _roi, out var _mask)) { MessageBox.Show("ROI alınamadı."); return; }
+            _inputMat = tmp.Clone();
+            pictureBox1.Image = _inputMat.ToBitmap();
+
+            if (!_roiExt.TryExtract(_inputMat, out _roi, out _)) { MessageBox.Show("ROI alınamadı."); return; }
+
             RegisterROIPictureBox.Image = _roi.ToBitmap();
-            LoginROIPictureBox.Image = _mask.ToBitmap();
-            
+            //LoginROIPictureBox.Image = _mask.ToBitmap();
+
         }
         /// <summary>
         /// Upload image from file for recognition
@@ -68,13 +81,20 @@ namespace Palmprint_Recognition
         {
             using var dlg = new OpenFileDialog { Filter = "Image Files|*.jpg;*.png;*.bmp" };
             if (dlg.ShowDialog() != DialogResult.OK) return;
-            _loginMat?.Dispose(); pictureBox2.Image?.Dispose(); _roiLogin?.Dispose(); LoginROIPictureBox.Image?.Dispose();
+
+            _loginMat?.Dispose();
+            pictureBox2.Image?.Dispose();
+            _roiLogin?.Dispose();
+            LoginROIPictureBox.Image?.Dispose();
+
             using var tmp = CvInvoke.Imread(dlg.FileName, ImreadModes.Color);
-            _loginMat = tmp.Clone(); pictureBox2.Image = _loginMat.ToBitmap();
+            _loginMat = tmp.Clone();
+            pictureBox2.Image = _loginMat.ToBitmap();
+
             if (!_roiExt.TryExtract(_loginMat, out _roiLogin, out _)) { MessageBox.Show("ROI alınamadı."); return; }
+
             LoginROIPictureBox.Image = _roiLogin.ToBitmap();
 
-            
         }
         /// <summary>
         /// Recognition button
@@ -83,9 +103,18 @@ namespace Palmprint_Recognition
         /// <param name="e"></param>
         private void button2_Click(object sender, EventArgs e)
         {
-            if (_loginMat == null) { MessageBox.Show("Önce giriş görüntüsü yükleyin."); return; }
-            var res = _recognizer.Recognize(_roiLogin, 0.6f);
-            MessageBox.Show(res != null ? $"Hoşgeldiniz, {res}!" : "Kayıt bulunamadı.");
+            if (_roiLogin == null || _loginMat == null) { MessageBox.Show("Önce giriş görüntüsü yükleyin."); return; }
+            var (id, percentage) = _recognizer.Recognize(_roiLogin, distanceThreshold: _distanceThreshold, similarityThreshold: _similarityThreshold);
+            if (id == null)
+            {
+                MessageBox.Show("Kayıt bulunamadı.");
+            }
+            else
+            {
+                MessageBox.Show($"Hoş geldiniz, {id}!");
+                RecognitionLabel.Text = $"{id} ile benzerlik yüzdesi %{percentage}";
+            }
+                        
         }
         /// <summary>
         /// Enroll
@@ -97,6 +126,7 @@ namespace Palmprint_Recognition
             if (_inputMat == null) { MessageBox.Show("Önce görüntü yükleyin."); return; }
             var id = userIDTextBox.Text.Trim();
             if (string.IsNullOrEmpty(id)) { MessageBox.Show("ID girin."); return; }
+
             try { _recognizer.Enroll(id, _roi); MessageBox.Show($"'{id}' başarıyla kaydedildi."); RefreshIdList(); }
             catch (Emgu.CV.Util.CvException cvEx) { MessageBox.Show($"OpenCV hatası: {cvEx.Message}"); }
             catch (Exception ex) { MessageBox.Show(ex.Message); }
@@ -122,7 +152,6 @@ namespace Palmprint_Recognition
         {
 
         }
-
 
     }
 }

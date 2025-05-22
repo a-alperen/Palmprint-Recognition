@@ -40,7 +40,7 @@
             label2 = new Label();
             pictureBox2 = new PictureBox();
             LoginROIPictureBox = new PictureBox();
-            label3 = new Label();
+            RecognitionLabel = new Label();
             LoginImageButton = new Button();
             ((System.ComponentModel.ISupportInitialize)pictureBox1).BeginInit();
             ((System.ComponentModel.ISupportInitialize)RegisterROIPictureBox).BeginInit();
@@ -160,15 +160,15 @@
             LoginROIPictureBox.TabIndex = 13;
             LoginROIPictureBox.TabStop = false;
             // 
-            // label3
+            // RecognitionLabel
             // 
-            label3.AutoSize = true;
-            label3.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point, 0);
-            label3.Location = new Point(334, 688);
-            label3.Name = "label3";
-            label3.Size = new Size(354, 28);
-            label3.TabIndex = 14;
-            label3.Text = "Öklid Mesafesine Göre Tanıma Yüzdesi: ";
+            RecognitionLabel.AutoSize = true;
+            RecognitionLabel.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point, 0);
+            RecognitionLabel.Location = new Point(334, 688);
+            RecognitionLabel.Name = "RecognitionLabel";
+            RecognitionLabel.Size = new Size(354, 28);
+            RecognitionLabel.TabIndex = 14;
+            RecognitionLabel.Text = "Öklid Mesafesine Göre Tanıma Yüzdesi: ";
             // 
             // LoginImageButton
             // 
@@ -186,7 +186,7 @@
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(1006, 753);
             Controls.Add(LoginImageButton);
-            Controls.Add(label3);
+            Controls.Add(RecognitionLabel);
             Controls.Add(LoginROIPictureBox);
             Controls.Add(pictureBox2);
             Controls.Add(label2);
@@ -224,7 +224,7 @@
         private Label label2;
         private PictureBox pictureBox2;
         private PictureBox LoginROIPictureBox;
-        private Label label3;
+        private Label RecognitionLabel;
         private Button LoginImageButton;
     }
 }
