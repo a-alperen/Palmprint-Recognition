@@ -17,11 +17,11 @@ namespace Palmprint_Recognition.Extraction
             using var gray = new Mat();
             CvInvoke.CvtColor(roi, gray, ColorConversion.Bgr2Gray);
             // Convert Mat to Matrix<float>
-            var floatMat = new Matrix<float>(gray.Rows, gray.Cols);
+            using var floatMat = new Matrix<float>(gray.Rows, gray.Cols);
             gray.ConvertTo(floatMat, DepthType.Cv32F);
 
             // 2) Forward DCT into a new Matrix<float>
-            var dctMat = new Matrix<float>(gray.Rows, gray.Cols);
+            using var dctMat = new Matrix<float>(gray.Rows, gray.Cols);
             CvInvoke.Dct(floatMat, dctMat, DctType.Forward);
 
             // 3) Extract top-left blockSize×blockSize coefficients (raw)
