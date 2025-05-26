@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using System.Text;
 
 namespace Palmprint_Recognition.Data
 {
@@ -30,9 +31,13 @@ namespace Palmprint_Recognition.Data
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 var parts = line.Split(',');
-                // ilk eleman: ID; gerisi raw DCT feature
-                var feats = parts.Skip(1).Select(float.Parse).ToArray();
-                _raw.Add(feats);
+                var id = parts[0];
+                // Ondalık ayırıcı olarak nokta kullanan InvariantCulture ile parse ediyoruz
+                var vec = parts
+                    .Skip(1)
+                    .Select(tok => float.Parse(tok, CultureInfo.InvariantCulture))
+                    .ToArray();
+                _raw.Add(vec);
             }
         }
 
@@ -41,14 +46,14 @@ namespace Palmprint_Recognition.Data
             // Listeye ekle (isteğe bağlı)
             _raw.Add(feats);
 
-            // Dosyaya tek satır olarak ekle
-            var line = id + "," +
-                string.Join(",",
-                    feats.Select(f =>
-                        f.ToString("G6", CultureInfo.InvariantCulture)
-                    )
-                );
-            File.AppendAllText(_filePath, line + Environment.NewLine);
+            // Dosyayı baştan yaz: böylece eski raw satırlar kalmaz
+            using var sw = new StreamWriter(_filePath, append: false, encoding: Encoding.UTF8);
+            foreach (var kv in _raw)
+            {
+                string line = id + "," +
+                              string.Join(",", kv.Select(f => f.ToString("G6", CultureInfo.InvariantCulture)));
+                sw.WriteLine(line);
+            }
         }
 
         public IReadOnlyList<float[]> AllRaw => _raw;

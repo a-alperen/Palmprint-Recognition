@@ -58,9 +58,9 @@ namespace Palmprint_Recognition
             if (dlg.ShowDialog() != DialogResult.OK) return;
 
             _inputMat?.Dispose();
-            pictureBox1.Image?.Dispose();
+            pictureBox1.Image = null;
             _roi?.Dispose();
-            RegisterROIPictureBox.Image?.Dispose();
+            RegisterROIPictureBox.Image = null;
 
             using var tmp = CvInvoke.Imread(dlg.FileName, ImreadModes.Color);
             _inputMat = tmp.Clone();
@@ -83,9 +83,9 @@ namespace Palmprint_Recognition
             if (dlg.ShowDialog() != DialogResult.OK) return;
 
             _loginMat?.Dispose();
-            pictureBox2.Image?.Dispose();
+            pictureBox2.Image = null;
             _roiLogin?.Dispose();
-            LoginROIPictureBox.Image?.Dispose();
+            LoginROIPictureBox.Image = null;
 
             using var tmp = CvInvoke.Imread(dlg.FileName, ImreadModes.Color);
             _loginMat = tmp.Clone();

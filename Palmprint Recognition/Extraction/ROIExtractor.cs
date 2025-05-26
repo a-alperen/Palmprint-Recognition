@@ -3,6 +3,7 @@ using Emgu.CV.CvEnum;
 using Emgu.CV.Face;
 using Emgu.CV.Structure;
 using Emgu.CV.Util;
+using Emgu.CV.XImgproc;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
@@ -22,8 +23,8 @@ namespace Palmprint_Recognition.Extraction
         /// <returns></returns>
         public bool TryExtract(Mat inputBgr, out Mat palmROI, out Mat dtMask)
         {
-            palmROI = null;
-            dtMask = null;
+            palmROI = new();
+            dtMask = new();
 
             if (!IsValidInput(inputBgr))
                 return false;
@@ -35,47 +36,43 @@ namespace Palmprint_Recognition.Extraction
             // 2) Binarize and prepare mask
             Mat binaryImg = BinaryImage(noGlare);
             binaryImg = AddBorder(binaryImg, 5);
-            ShowBinaryImage(binaryImg, new Size(600, 600)); // Optional: for debugging
             Mat proc = binaryImg.Clone();
-
-            using var ker = CvInvoke.GetStructuringElement(ElementShape.Rectangle, new Size(7, 7), new Point(-1, -1));
+            
+            using var ker = CvInvoke.GetStructuringElement(ElementShape.Rectangle, new Size(5, 5), new Point(-1, -1));
             CvInvoke.Erode(proc, proc, ker, new Point(-1, -1), 3, BorderType.Constant, new MCvScalar(0));
-
+            ShowBinaryImage(proc, new Size(600, 600)); // Optional: for debugging
 
             // 3) Find hand contour
             VectorOfPoint? rawContour = FindLargestContour(proc);
             if (rawContour == null || rawContour.Size < 3)
                 return false;
-            using(var contour = rawContour)
-            {
-                // 4) Detect valley points
-                List<Point> valleys = GetValleyPoints(contour);
-                Debug.WriteLine($"Valley count: {valleys.Count}");
+            using var contour = rawContour;
 
-                if (valleys.Count >= 3)
-                {
-                    // 5) Determine handedness and order valleys
-                    bool isLeftHand = IsLeftHandCombined(contour, valleys, 20);
-                    List<Point> orderedValleys = SortValleys(valleys, isLeftHand);
+            // 4) Detect valley points
+            List<Point> valleys = GetValleyPointsFlexible(contour);
+            Debug.WriteLine($"Valley count: {valleys.Count}");
 
-                    // 6) Compute source polygon and extract raw ROI
-                    Point[] srcPoints = ComputeSourcePoints(orderedValleys, isLeftHand, 120);
-                    (Mat rawROI, Mat rawMask) = ExtractRawROI(inputBgr, srcPoints);
-                    DrawHandFeatures(inputBgr, contour, orderedValleys, srcPoints, new Size(600, 600));
+            if (valleys.Count < 3) return false;
 
-                    // 7) Compute rotation angle and align
-                    double theta = ComputeRotationAngle(orderedValleys, isLeftHand);
-                    AlignROI(rawROI, rawMask, theta, out palmROI, out dtMask);
+            // 5) Determine handedness and order valleys
+            bool isLeftHand = IsLeftHandCombined(contour, valleys, 20);
+            List<Point> orderedValleys = SortValleys(valleys, isLeftHand);
 
-                    // 8 Crop align roi
-                    (palmROI, _) = CropToMask(palmROI, dtMask);
+            // 6) Compute source polygon and extract raw ROI
+            Point[] srcPoints = ComputeSourcePointsScaledOffset(orderedValleys, isLeftHand);
+            (Mat rawROI, Mat rawMask) = ExtractRawROI(inputBgr, srcPoints);
+            DrawHandFeatures(inputBgr, contour, orderedValleys, srcPoints, new Size(600, 600), 6);
 
-                    LightingNormalize(palmROI);
-                    dtMask = binaryImg.Clone();
-                    return true;
-                }
-            }
-            return ExtractByDistanceTransform(inputBgr, out palmROI, out dtMask);
+            // 7) Compute rotation angle and align
+            double theta = ComputeRotationAngle(orderedValleys, isLeftHand);
+            AlignROI(rawROI, rawMask, theta, out palmROI, out dtMask);
+
+            // 8 Crop align roi
+            (palmROI, _) = CropToMask(palmROI, dtMask);
+
+            LightingNormalize(palmROI);
+            dtMask = binaryImg.Clone();
+            return true;
 
         }
         private bool IsValidInput(Mat input)
@@ -92,7 +89,7 @@ namespace Palmprint_Recognition.Extraction
 
             // 1) Convex hull indeksleri
             using var hullIdx = new VectorOfInt();
-            CvInvoke.ConvexHull(contour, hullIdx, false, false);
+            CvInvoke.ConvexHull(contour, hullIdx, true, false);
 
             // 2) Convexity defects
             using var defectMat = new Mat();
@@ -109,8 +106,8 @@ namespace Palmprint_Recognition.Extraction
                 int minDepth = Math.Max(10, (int)(bb.Height * 0.07));
 
                 // Y‐ekseni bandı: sadece palm dip bölgeleri (%15–%80 arası)
-                double topThresh = bb.Y + bb.Height * 0.15;
-                double bottomThresh = bb.Y + bb.Height * 0.75;
+                double topThresh = bb.Y + bb.Height * 0.05;
+                double bottomThresh = bb.Y + bb.Height * 0.80;
                 // ───────────────────────────────────────────────────────────────
 
                 for (int i = 0; i < d.GetLength(0); i++)
@@ -120,12 +117,13 @@ namespace Palmprint_Recognition.Extraction
                     int farIdx = d[i, 0, 2];
                     int depth = d[i, 0, 3];
 
-                    // 3) Depth filtresi
-                    if (depth < minDepth)
-                        continue;
-
+                    int pixDepth = depth >> 8;
                     Point pt = contour[farIdx];
+                    Debug.WriteLine($"defect[{i}] depth={pixDepth} at {pt} Y‐band? {pt.Y} top={topThresh:F1} bot={bottomThresh:F1}");
 
+                    // 3) Depth filtresi
+                    if (pixDepth < minDepth)
+                        continue;
                     // 4) Dikey bant filtresi
                     if (pt.Y < topThresh || pt.Y > bottomThresh)
                         continue;
@@ -145,7 +143,62 @@ namespace Palmprint_Recognition.Extraction
             }
             return valleys;
         }
-        
+        private List<Point> GetValleyPointsFlexible(VectorOfPoint contour)
+        {
+            // 1) Hull ve defects
+            using var hullIdx = new VectorOfInt();
+            CvInvoke.ConvexHull(contour, hullIdx, false, false);
+            using var defectMat = new Mat();
+            CvInvoke.ConvexityDefects(contour, hullIdx, defectMat);
+
+            var bb = CvInvoke.BoundingRectangle(contour);
+            double topY = bb.Y + bb.Height * 0.05;
+            double botY = bb.Y + bb.Height * 0.80;
+
+            var list = new List<(int farIdx, int depthPix, double angle)>();
+
+            if (defectMat.GetData() is int[,,] d)
+            {
+                for (int i = 0; i < d.GetLength(0); i++)
+                {
+                    int s = d[i, 0, 0], e = d[i, 0, 1], f = d[i, 0, 2], depthRaw = d[i, 0, 3];
+                    int depthPix = depthRaw >> 8;       // 256 sabit-nokta düzeltmesi
+                    var pt = contour[f];
+
+                    // 1) Y-band filtresi:
+                    if (pt.Y < topY || pt.Y > botY)
+                        continue;
+
+                    // 2) Açı filtresi (opsiyonel ama faydalı)
+                    var v1 = new PointF(contour[s].X - pt.X, contour[s].Y - pt.Y);
+                    var v2 = new PointF(contour[e].X - pt.X, contour[e].Y - pt.Y);
+                    double dot = v1.X * v2.X + v1.Y * v2.Y;
+                    double ang = Math.Acos(dot / (
+                                 Math.Sqrt(v1.X * v1.X + v1.Y * v1.Y) *
+                                 Math.Sqrt(v2.X * v2.X + v2.Y * v2.Y)
+                               )) * 180.0 / Math.PI;
+                    if (ang < 15 || ang > 120)
+                        continue;
+
+                    list.Add((f, depthPix, ang));
+                }
+            }
+
+            // 3) Derinliğe göre en derin 5 farIdx seç
+            var valleys = list
+              .OrderByDescending(x => x.depthPix)
+              .Take(4)
+              .Select(x => contour[x.farIdx])
+              .OrderBy(p => p.X)    // soldan sağa
+              .ToList();
+
+            return valleys;
+        }
+
+
+
+
+
         //private List<Point> GetValleyPoints(VectorOfPoint contour)
         //{
         //    // Compute convex hull indices
@@ -200,7 +253,56 @@ namespace Palmprint_Recognition.Extraction
 
         //    return valleys;
         //}
+        private bool IsLeftHandCombined1(
+            VectorOfPoint contour,
+            List<Point> valleys,
+            double ellipseEpsilon = 5.0     // ellipse projeksi­yon eşiği
+        )   
+        {
+            // 1) Fallback‐öncesi: thumb–Y metodu
+            bool valleyDecision = IsLeftHandByThumbValleyY(contour, valleys);
 
+            // 2) Valley‐metodunun güvenirliği: 
+            //    en az 2 vadi, ve merkezden X farkı belli bir eşiğin üzerinde olmalı
+            //    (30 px örnek, ya da bb.Width * 0.1 gibi oransal)
+            var bb = CvInvoke.BoundingRectangle(contour);
+            int centerX = bb.X + bb.Width / 2;
+
+            // thumb–Y ile seçilen vadinin X uzaklığı
+            Point thumbVal = valleys
+                .OrderByDescending(p => p.Y)
+                .First();
+            int distX = Math.Abs(thumbVal.X - centerX);
+
+            bool valleyReliable = valleys.Count >= 2
+                                  && distX >= Math.Max(10, bb.Width / 10);
+
+            if (valleyReliable)
+            {
+                Debug.WriteLine($"Handedness by thumb‐Y : {valleyDecision}");
+                return valleyDecision;
+            }
+
+            // 3) Buraya geldiyse valley‐metodu belirsiz kaldı → ellipse‐projeksiyon
+            //    (orijinal IsLeftHandCombined kodundan kopya)
+            RotatedRect ellipse = CvInvoke.FitEllipse(contour);
+            PointF eCenter = ellipse.Center;
+            double angRad = ellipse.Angle * Math.PI / 180.0;
+            double ux = Math.Cos(angRad), uy = Math.Sin(angRad);
+            double nx = -uy, ny = ux;
+
+            var m = CvInvoke.Moments(contour);
+            double cx = m.M10 / m.M00, cy = m.M01 / m.M00;
+            double proj = (cx - eCenter.X) * nx + (cy - eCenter.Y) * ny;
+
+            bool ellipseDecision = proj > 0;
+            Debug.WriteLine($"Handedness by ellipse fallback: {ellipseDecision} (proj={proj:F1})");
+
+            return Math.Abs(proj) >= ellipseEpsilon
+                 ? ellipseDecision
+                 : valleyDecision;   // eğer ellipse de çok belirsizse,  
+                                     // yine valley kararına dön
+        }
         /// <summary>
         /// Birincil yöntem: el konturuna fitEllipse → centroid projeksiyonu.
         /// Eğer |proj| < epsilon ise (belirsiz bölge), fallback olarak
@@ -212,10 +314,10 @@ namespace Palmprint_Recognition.Extraction
             double epsilon = 5.0   // piksel cinsinden eşik
         )
         {
-            //// --- 1) Elips‐projeksiyon yöntemi ---
-            //// Uygun kontur uzunluğu kontrolü
-            //if (contour == null || contour.Size < 5)
-            //    throw new ArgumentException("En az 5 noktalı contour gerekli.");
+            // --- 1) Elips‐projeksiyon yöntemi ---
+            // Uygun kontur uzunluğu kontrolü
+            if (contour == null || contour.Size < 5)
+                throw new ArgumentException("En az 5 noktalı contour gerekli.");
 
             //// 1.1) Ellipse fit
             //RotatedRect ellipse = CvInvoke.FitEllipse(contour);
@@ -247,6 +349,7 @@ namespace Palmprint_Recognition.Extraction
             return IsLeftHandByThumbValleyY(contour, valleys);
 
         }
+
         /// <summary>
         /// Fallback: en küçük Y’ye (en yukarıdaki) valley’i thumb-index çukuru
         /// kabul edip onun bounding-box merkezine göre sol/sağ karar verir.
@@ -274,36 +377,6 @@ namespace Palmprint_Recognition.Extraction
             return thumbValley.X < centerX;
         }
 
-        /// <summary>
-        /// Fallback: önce ring–pinky vadisini eleyip
-        /// sadece üst yarıdaki valley’ler içinde en uçtaki
-        /// (thumb–index) vadinin konumuna bakar.
-        /// </summary>
-        private bool IsLeftHandByThumbValley(VectorOfPoint contour, List<Point> valleys)
-        {
-            // 1) Bounding‐box ve centerX
-            var bb = CvInvoke.BoundingRectangle(contour);
-            int centerX = bb.X + bb.Width / 2;
-
-            // 2) Y ekseninde sadece palm/finger bölgesi
-            //    Alt %40’ı atla (y >= bb.Y + bb.Height * 0.40)
-            double yThresh = bb.Y + bb.Height * 0.40;
-            var candidates = valleys
-                .Where(p => p.Y < yThresh)     // üst yüzde 60 içinde
-                .ToList();
-
-            // Eğer hiç valley kalmadıysa tüm listeye dön
-            if (candidates.Count == 0)
-                candidates = valleys;
-
-            // 3) X’e göre en uçta olanı al
-            var thumbVal = candidates
-                .OrderByDescending(p => Math.Abs(p.X - centerX))
-                .First();
-
-            // 4) O vadi noktası centerX’in sağındaysa → left hand
-            return thumbVal.X > centerX;
-        }
         private bool IsLeftHandByFurthestValley(VectorOfPoint contour, List<Point> valleys)
         {
             var bb = CvInvoke.BoundingRectangle(contour);
@@ -319,56 +392,93 @@ namespace Palmprint_Recognition.Extraction
                 : valleys.OrderByDescending(p => p.X).ToList();
         }
 
-        private Point[] ComputeSourcePoints(List<Point> ordered, bool isLeftHand, int offset = 100)
+        /// <summary>
+        /// İki valley arası mesafeyi d olarak alır,
+        /// - yatayda scale·d büyütür (scale ≥ 1),
+        /// - valley çizgisinden palm içerisine doğru offsetDown·d öteler (offsetDown ≥ 0),
+        /// ve döndürülmüş dörtgen köşelerini döner.
+        /// </summary>
+        private Point[] ComputeSourcePointsScaledOffset(
+            List<Point> orderedValleys,
+            bool isLeftHand,
+            double scale = 1.4,
+            double offsetDown = 0.2
+        )
         {
-            // Calculate p1 and p2 based on count
+            // 1) p1, p2 seçimi
             Point p1, p2;
-            if (ordered.Count >= 4)
+            if (orderedValleys.Count >= 4)
             {
-                p1 = ordered[1];
-                p2 = ordered[3];
+                p1 = orderedValleys[1];
+                p2 = orderedValleys[3];
             }
-            else if (ordered.Count == 3)
+            else if (orderedValleys.Count == 3)
             {
-                p1 = ordered[1];
-                p2 = ordered[2];
+                p1 = orderedValleys[1];
+                p2 = orderedValleys[2];
             }
             else
             {
-                p1 = ordered[0];
-                p2 = ordered[1];
+                p1 = orderedValleys[0];
+                p2 = orderedValleys[1];
             }
 
-            // Compute vector and normals
-            double dx = p2.X - p1.X;
-            double dy = p2.Y - p1.Y;
-            double side = Math.Sqrt(dx * dx + dy * dy);
+            // 2) d ve birim valley→valley vektörü û
+            double dx = p2.X - p1.X, dy = p2.Y - p1.Y;
+            double d = Math.Sqrt(dx * dx + dy * dy);
+            double ux = dx / d, uy = dy / d;
 
-            double nx = dy / side;
-            double ny = -dx / side;
-
-            // 4) Sol elde normali ters çevir
+            // 3) içeri bakan normal (avuç içi yönü)
+            double nx = dy / d;
+            double ny = -dx / d;
             if (isLeftHand)
             {
                 nx = -nx;
                 ny = -ny;
             }
 
-            Point down1 = new Point(
-                p1.X + (int)Math.Round(nx * side),
-                p1.Y + (int)Math.Round(ny * side)
+            // 4) Yatayda pad = (scale-1)*d/2
+            double padH = (scale - 1) * d * 0.5;
+
+            // 5) valley line üzeri scaled top-köşeler
+            var p1e = new Point(
+                (int)Math.Round(p1.X - ux * padH),
+                (int)Math.Round(p1.Y - uy * padH)
             );
-            Point down2 = new Point(
-                p2.X + (int)Math.Round(nx * side),
-                p2.Y + (int)Math.Round(ny * side)
+            var p2e = new Point(
+                (int)Math.Round(p2.X + ux * padH),
+                (int)Math.Round(p2.Y + uy * padH)
             );
 
-            Point p1s = new Point(p1.X, p1.Y + offset);
-            Point p2s = new Point(p2.X, p2.Y + offset);
-            Point d1s = new Point(down1.X, down1.Y + offset);
-            Point d2s = new Point(down2.X, down2.Y + offset);
+            // 6) Aşağı offset = offsetDown * d
+            double padV = offsetDown * d;
 
-            return new[] { p1s, p2s, d2s, d1s };
+            // 7) Ölçekli kenar boyu = scale*d
+            double newD = scale * d;
+
+            // 8) ROI’nin dört köşesi:
+            //    - Üst sol: p1e + normal*padV
+            //    - Üst sağ: p2e + normal*padV
+            //    - Alt sağ: p2e + normal*(padV + newD)
+            //    - Alt sol: p1e + normal*(padV + newD)
+            Point topLeft = new Point(
+                (int)Math.Round(p1e.X + nx * padV),
+                (int)Math.Round(p1e.Y + ny * padV)
+            );
+            Point topRight = new Point(
+                (int)Math.Round(p2e.X + nx * padV),
+                (int)Math.Round(p2e.Y + ny * padV)
+            );
+            Point bottomRight = new Point(
+                (int)Math.Round(p2e.X + nx * (padV + newD)),
+                (int)Math.Round(p2e.Y + ny * (padV + newD))
+            );
+            Point bottomLeft = new Point(
+                (int)Math.Round(p1e.X + nx * (padV + newD)),
+                (int)Math.Round(p1e.Y + ny * (padV + newD))
+            );
+
+            return [topLeft, topRight, bottomRight, bottomLeft];
         }
 
         private (Mat rawROI, Mat rawMask) ExtractRawROI(Mat input, Point[] src)
@@ -491,7 +601,7 @@ namespace Palmprint_Recognition.Extraction
             CvInvoke.MorphologyEx(mask, mask, MorphOp.Close, kernel, Point.Empty, 1, BorderType.Default, new MCvScalar());
 
             // Ufak delikleri doldur
-            FillSmallHoles(mask, maxHoleArea: 1500);
+            //FillSmallHoles(mask, maxHoleArea: 200);
 
             return mask;
         }
@@ -558,114 +668,58 @@ namespace Palmprint_Recognition.Extraction
             return dst;
         }
 
-        /// <summary>
-        /// Distance‐Transform tabanlı fallback ROI çıkarma.
-        /// </summary>
-        /// <param name="inputBgr">Orijinal renkli BGR görüntü</param>
-        /// <param name="palmROI">Çıkarılan palm ROI (renkli)</param>
-        /// <param name="dtMask">Çıkarılan palm ROI maskesi (binary)</param>
-        /// <returns>Başarılıysa true; el bulunamazsa false</returns>
-        private bool ExtractByDistanceTransform(Mat inputBgr, out Mat palmROI, out Mat dtMask)
-        {
-            palmROI = null;
-            dtMask = null;
-            if (inputBgr == null || inputBgr.IsEmpty)
-                return false;
-
-            // 1) Normalize & binarize (AdaptiveThreshold veya sizin NormalizeAndBinarize)
-            LightingNormalize(inputBgr);
-            Mat binary = BinaryImage(inputBgr);
-
-            // 2) En büyük el konturunu bulup doldur
-            VectorOfPoint? contour = FindLargestContour(binary);
-            if (contour == null)
-                return false;
-            Mat handMask = new Mat(binary.Size, DepthType.Cv8U, 1);
-            CvInvoke.DrawContours(handMask, new VectorOfVectorOfPoint(contour), 0, new MCvScalar(255), -1);
-
-            // 3) Morfolojik close ile ufak boşlukları kapatın (opsiyonel ama tavsiye ederim)
-            var kernel = CvInvoke.GetStructuringElement(
-                ElementShape.Ellipse, new Size(15, 15), new Point(-1, -1)
-            );
-            CvInvoke.MorphologyEx(
-                handMask, handMask,
-                MorphOp.Close, kernel,
-                new Point(-1, -1), 1,
-                BorderType.Constant, new MCvScalar(0)
-            );
-
-            // 4) Distance Transform
-            Mat dist = new Mat();
-            CvInvoke.DistanceTransform(handMask, dist, null, DistType.L2, 5);
-
-            double minVal = 0, maxVal = 0;
-            Point minLoc = new Point();
-            Point maxLoc = new Point();
-
-            // 5) En derin noktanın koordinatını al
-            CvInvoke.MinMaxLoc(
-                dist,       // input distance-transform matrisi
-                ref minVal, // en küçük değer (kullanmasak da tanımlı olmak zorunda)
-                ref maxVal, // en büyük değer
-                ref minLoc, // minLoc
-                ref maxLoc  // maxLoc: avuç içinin en iç noktası
-            );
-            Point center = maxLoc;
-
-            // 6) El bounding‐box’ından sabit boyut belirleyin (oransal)
-            var bb = CvInvoke.BoundingRectangle(contour);
-            int w = (int)(bb.Width * 0.35);
-            int h = (int)(bb.Height * 0.35);
-
-            // 7) ROI dikdörtgenini center etrafında oluşturun, sınırlar içinde kalacak şekilde clamp edin
-            int x = Math.Max(0, Math.Min(handMask.Cols - w, center.X - w / 2));
-            int y = Math.Max(0, Math.Min(handMask.Rows - h, center.Y - h / 2));
-            var roiRect = new Rectangle(x, y, w, h);
-
-            // 8) Renkli görüntüden ve maskeden kırp
-            palmROI = new Mat(inputBgr, roiRect);
-            dtMask = new Mat(handMask, roiRect);
-            CvInvoke.Resize(palmROI, palmROI, new Size(128, 128), 0, 0, Inter.Linear);
-            return true;
-        }
-
         #region Debug Methods
-        private void DrawHandFeatures(Mat originalBgr, VectorOfPoint contour, List<Point> valleys, Point[] corners, Size windowSize, int thickness = 6)
+        private void DrawHandFeatures(Mat originalBgr, VectorOfPoint contour,
+            List<Point> valleys, Point[] corners,
+            Size windowSize, int thickness = 6,
+            bool drawBoundingBox = true, bool drawCountour = true, bool drawValleyPts = true, bool drawROIArea = true)
         {
             Mat debug = originalBgr.Clone();
+
             // Draw contour
-            CvInvoke.DrawContours(debug, new VectorOfVectorOfPoint(contour), -1, new MCvScalar(255, 0, 0), thickness);
-
+            if (drawCountour)
+            {
+                CvInvoke.DrawContours(debug, new VectorOfVectorOfPoint(contour), -1, new MCvScalar(255, 0, 0), thickness);
+            }
             // Draw valley points
-            for (int i = 0; i < valleys.Count; i++)
+            if (drawValleyPts)
             {
-                var p = valleys[i];
-                string label1 = $"P{i + 1}";
-                CvInvoke.Circle(debug, p, 16, new MCvScalar(0, 0, 255), thickness);
-                CvInvoke.PutText(debug, label1, new Point(p.X + 10, p.Y + 5),
-                                 FontFace.HersheySimplex, 1.5, new MCvScalar(0, 0, 255), thickness);
+                for (int i = 0; i < valleys.Count; i++)
+                {
+                    var p = valleys[i];
+                    string label1 = $"P{i + 1}";
+                    CvInvoke.Circle(debug, p, 16, new MCvScalar(0, 0, 255), thickness);
+                    CvInvoke.PutText(debug, label1, new Point(p.X + 10, p.Y + 5),
+                                     FontFace.HersheySimplex, 1.5, new MCvScalar(0, 0, 255), thickness);
+                }
             }
-
             // Draw bounding box and center
-            var bb = CvInvoke.BoundingRectangle(contour);
-            int centerX = bb.X + bb.Width / 2;
-            int centerY = bb.Y + bb.Height / 2;
-            CvInvoke.Rectangle(debug, bb, new MCvScalar(0, 255, 0), thickness);
-            CvInvoke.Circle(debug, new Point(centerX, centerY), 15, new MCvScalar(255, 255, 0), thickness);
-            // Draw ROI Rectangle
-            for (int i = 0; i < 4; i++)
+            if (drawBoundingBox)
             {
-                Point pA = corners[i];
-                Point pB = corners[(i + 1) % 4];
-                CvInvoke.Line(debug, pA, pB, new MCvScalar(255, 0, 0), thickness);
+                var bb = CvInvoke.BoundingRectangle(contour);
+                int centerX = bb.X + bb.Width / 2;
+                int centerY = bb.Y + bb.Height / 2;
+                CvInvoke.Rectangle(debug, bb, new MCvScalar(0, 255, 0), thickness);
+                CvInvoke.Circle(debug, new Point(centerX, centerY), 15, new MCvScalar(255, 255, 0), thickness);
             }
-            float cx = (corners[0].X + corners[2].X) / 2f;
-            float cy = (corners[0].Y + corners[2].Y) / 2f;
-            CvInvoke.Circle(debug, new Point((int)cx, (int)cy), 5, new MCvScalar(0, 0, 255), thickness);
+            // Draw ROI Rectangle
+            if (drawROIArea)
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    Point pA = corners[i];
+                    Point pB = corners[(i + 1) % 4];
+                    CvInvoke.Line(debug, pA, pB, new MCvScalar(255, 0, 0), thickness);
+                }
+                float cx = (corners[0].X + corners[2].X) / 2f;
+                float cy = (corners[0].Y + corners[2].Y) / 2f;
+                CvInvoke.Circle(debug, new Point((int)cx, (int)cy), 5, new MCvScalar(0, 0, 255), thickness);
+            }
 
             CvInvoke.ResizeForFrame(debug, debug, windowSize);
             CvInvoke.Imshow("Hand Features", debug);
         }
+
         /// <summary>
         /// Show binary image in a separate window.
         /// </summary>
@@ -677,75 +731,7 @@ namespace Palmprint_Recognition.Extraction
             CvInvoke.ResizeForFrame(mat, mat, windowSize);
             CvInvoke.Imshow("Binary Image", mat);
         }
-        private void DrawValleyPoints(Mat input, List<Point> valleys, Size windowSize, int thickness = 6)
-        {
-            Mat debug = input.Clone();
-
-            for (int i = 0; i < valleys.Count; i++)
-            {
-                var p = valleys[i];
-                string label1 = $"P{i + 1}";
-                CvInvoke.Circle(debug, p, 16, new MCvScalar(0, 0, 255), thickness);
-                CvInvoke.PutText(debug, label1, new Point(p.X + 10, p.Y + 5),
-                                 FontFace.HersheySimplex, 1.5, new MCvScalar(0, 0, 255), thickness);
-            }
-            CvInvoke.ResizeForFrame(debug, debug, windowSize);
-            CvInvoke.Imshow("Valley points", debug);
-        }
-        private void DrawROIRectangle(Mat input, Point[] corners, Size windowSize, int thickness = 6)
-        {
-            if (corners == null || corners.Length != 4)
-                throw new ArgumentException("4 corner point bekleniyor", nameof(corners));
-
-            Mat debug = input.Clone();
-            // 5) Bu dik kenar çizgilerini maviyle çiz
-            // 4 kenarı sırayla çiz
-            for (int i = 0; i < 4; i++)
-            {
-                Point pA = corners[i];
-                Point pB = corners[(i + 1) % 4];
-                CvInvoke.Line(debug, pA, pB, new MCvScalar(255, 0, 0), thickness);
-            }
-            float cx = (corners[0].X + corners[2].X) / 2f;
-            float cy = (corners[0].Y + corners[2].Y) / 2f;
-            CvInvoke.Circle(debug, new Point((int)cx, (int)cy), 5, new MCvScalar(0, 0, 255), thickness);
-
-            CvInvoke.ResizeForFrame(debug, debug, windowSize);
-            CvInvoke.Imshow("ROI Rectangle", debug);
-        }
-        /// <summary>
-        /// Contour’a ait bounding‐box’u orijinal görüntüye çizip PictureBox’a bastırır.
-        /// </summary>
-        private void ShowBoundingBox(Mat originalBgr, VectorOfPoint contour, Size windowSize)
-        {
-            // Orijinalin bir kopyasını alın, üzerine çizim yapacağız
-            using var vis = originalBgr.Clone();
-
-            // 1) Konturun bounding rect’ini bulun
-            var bb = CvInvoke.BoundingRectangle(contour);
-
-            // 2) Rect’i yeşil olarak çiz (BGR: 0,255,0) kalınlık 2
-            CvInvoke.Rectangle(vis, bb, new MCvScalar(0, 255, 0), 6);
-
-            CvInvoke.ResizeForFrame(vis, vis, windowSize);
-            CvInvoke.Imshow("Bounding Box", vis);
-        }
-        /// <summary>
-        /// Show countour in a separate window.
-        /// </summary>
-        /// <param name="originalBgr"></param>
-        /// <param name="contour"></param>
-        /// <param name="windowSize"></param>
-        private void ShowContour(Mat originalBgr, VectorOfPoint contour, Size windowSize, int thickness = 6)
-        {
-            // Orijinalin bir kopyasını alın, üzerine çizim yapacağız
-            using var vis = originalBgr.Clone();
-            // 1) Konturu mavi olarak çiz (BGR: 255,0,0) kalınlık 2
-            CvInvoke.DrawContours(vis, new VectorOfVectorOfPoint(contour), -1, new MCvScalar(255, 0, 0), thickness);
-            CvInvoke.ResizeForFrame(vis, vis, windowSize);
-            CvInvoke.Imshow("Contour", vis);
-        }
-
+        
         #endregion
     }
 }
