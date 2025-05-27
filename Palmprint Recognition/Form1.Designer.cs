@@ -244,6 +244,7 @@
             EvaluateButton.TabIndex = 20;
             EvaluateButton.Text = "Dosya Seç";
             EvaluateButton.UseVisualStyleBackColor = true;
+            EvaluateButton.Visible = false;
             EvaluateButton.Click += EvaluateButton_Click;
             // 
             // ExtractROIButton
@@ -254,6 +255,7 @@
             ExtractROIButton.TabIndex = 21;
             ExtractROIButton.Text = "ROI Çıkart";
             ExtractROIButton.UseVisualStyleBackColor = true;
+            ExtractROIButton.Visible = false;
             ExtractROIButton.Click += ExtractROIButton_Click;
             // 
             // Form1

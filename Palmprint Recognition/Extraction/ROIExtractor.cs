@@ -32,7 +32,6 @@ namespace Palmprint_Recognition.Extraction
             // 1) Preprocess: normalize lighting and binarize
             LightingNormalize(inputBgr);
             Mat noGlare = RemoveSpecularHighlights(inputBgr);
-            ShowBinaryImage(inputBgr, new Size(600, 600)); // Optional: for debugging
 
             // 2) Binarize and prepare mask
             Mat binaryImg = BinaryImage(noGlare);
@@ -75,10 +74,10 @@ namespace Palmprint_Recognition.Extraction
             using var ker = CvInvoke.GetStructuringElement(ElementShape.Rectangle, new Size(7, 7), new Point(-1, -1));
             CvInvoke.MorphologyEx(proc, proc, MorphOp.Erode, ker, new Point(-1, -1), 6, BorderType.Constant, new MCvScalar(0));
             //ShowBinaryImage(proc, new Size(600, 600)); // Optional: for debugging
-            //CvInvoke.MorphologyEx(proc,proc,MorphOp.Close, ker, new Point(-1, -1), 2, BorderType.Constant, new MCvScalar(0));
+
             // 3) Find hand contour
             VectorOfPoint? rawContour = FindLargestContour(proc);
-            
+
             if (rawContour == null || rawContour.Size < 3)
                 return false;
             using var contour = rawContour;
@@ -97,7 +96,7 @@ namespace Palmprint_Recognition.Extraction
             Point[] srcPoints = ComputeSourcePointsScaledOffset(orderedValleys, isLeftHand);
 
             (Mat rawROI, Mat rawMask) = ExtractRawROI(inputBgr, srcPoints);
-            //DrawHandFeatures(inputBgr, contour, orderedValleys, srcPoints, new Size(600, 600), 6);
+            //DrawHandFeatures(inputBgr, contour, orderedValleys, srcPoints, new Size(600, 600), 6, false, true, true, true);
 
             // 7) Compute rotation angle and align
             double theta = ComputeRotationAngle(orderedValleys, isLeftHand);
@@ -298,7 +297,7 @@ namespace Palmprint_Recognition.Extraction
             VectorOfPoint contour,
             List<Point> valleys,
             double ellipseEpsilon = 5.0     // ellipse projeksi­yon eşiği
-        )   
+        )
         {
             // 1) Fallback‐öncesi: thumb–Y metodu
             bool valleyDecision = IsLeftHandByThumbValleyY(contour, valleys);
@@ -782,7 +781,7 @@ namespace Palmprint_Recognition.Extraction
             CvInvoke.ResizeForFrame(mat, mat, windowSize);
             CvInvoke.Imshow("Binary Image", mat);
         }
-        
+
         #endregion
     }
 }

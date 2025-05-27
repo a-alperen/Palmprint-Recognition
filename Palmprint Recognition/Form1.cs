@@ -105,8 +105,8 @@ namespace Palmprint_Recognition
         private void button2_Click(object sender, EventArgs e)
         {
             if (_roiLogin == null || _loginMat == null) { MessageBox.Show("Önce giriş görüntüsü yükleyin."); return; }
-            var feat = _featExt.ComputeDctFeatures(_roiLogin, _blockSize);
-            feat = _featExt.L2Normalize(feat);
+            var raw = _featExt.ComputeHybridFeatures(_roiLogin, _blockSize);
+            var feat = _featExt.L2Normalize(raw);
             var (id, percentage) = _recognizer.Recognize(feat, _distanceThreshold, _similarityThreshold);
             if (id == null)
             {
@@ -131,7 +131,7 @@ namespace Palmprint_Recognition
             if (string.IsNullOrEmpty(id)) { MessageBox.Show("ID girin."); return; }
             if (_roi == null) return;
 
-            var raw = _featExt.ComputeDctFeatures(_roi, _blockSize);
+            var raw = _featExt.ComputeHybridFeatures(_roi, _blockSize);
             var feat = _featExt.L2Normalize(raw);
 
             try { _recognizer.Enroll(id, raw, feat); MessageBox.Show($"'{id}' başarıyla kaydedildi."); RefreshIdList(); }

@@ -2,6 +2,10 @@
 using Emgu.CV.CvEnum;
 using Emgu.CV.Structure;
 using Emgu.CV.Util;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+
 
 namespace Palmprint_Recognition.Extraction
 {
@@ -23,6 +27,16 @@ namespace Palmprint_Recognition.Extraction
             // 2) Forward DCT into a new Matrix<float>
             using var dctMat = new Matrix<float>(gray.Rows, gray.Cols);
             CvInvoke.Dct(floatMat, dctMat, DctType.Forward);
+
+            //// Normalize it for visualize
+            //Mat dctVis = new Mat();
+            //CvInvoke.Normalize(dctMat, dctVis, 0, 255, NormType.MinMax, DepthType.Cv8U);
+
+            //// Convert to 3-channel for visualization
+            //Rectangle roiBlock = new Rectangle(0, 0, 8, 8);
+            //CvInvoke.Rectangle(dctVis, roiBlock, new MCvScalar(0, 0, 255), 2); // kırmızı çerçeve
+
+            //CvInvoke.Imshow("dct_visual.png", dctVis);
 
             // 3) Extract top-left blockSize×blockSize coefficients (raw)
             if (dctMat.Rows < blockSize || dctMat.Cols < blockSize)
@@ -73,6 +87,22 @@ namespace Palmprint_Recognition.Extraction
                     lbpHist[code]++;
                 }
             }
+            //Debug.WriteLine($"LBP: {lbpHist.Length}");
+            //string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            //string outputPath = Path.Combine(desktop, "lbp_hist.csv");
+            //try
+            //{
+            //    using var writer = new StreamWriter(outputPath);
+            //    for (int i = 0; i < lbpHist.Length; i++)
+            //    {
+            //        writer.WriteLine($"{i},{lbpHist[i].ToString(CultureInfo.InvariantCulture)}");
+            //    }
+            //    Console.WriteLine("CSV çıktısı yazıldı: " + outputPath);
+            //}
+            //catch (Exception ex)
+            //{
+            //    Console.WriteLine("CSV yazılırken hata oluştu: " + ex.Message);
+            //}
 
             return lbpHist;
         }
@@ -104,7 +134,7 @@ namespace Palmprint_Recognition.Extraction
             dctFeats.CopyTo(hybridFeats, 0);
             lbpFeats.CopyTo(hybridFeats, dctFeats.Length);
 
-            return L2Normalize(hybridFeats);
+            return hybridFeats;
         }
         ///// <summary>
         ///// Select top features by discriminant power (between-class / within-class).

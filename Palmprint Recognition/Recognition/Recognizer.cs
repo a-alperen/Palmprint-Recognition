@@ -121,9 +121,9 @@ namespace Palmprint_Recognition.Recognition
             }
 
             // Log all distances for debugging
-            dists.Sort((a, b) => a.Dist.CompareTo(b.Dist));
-            foreach (var (Id, Vec, Dist) in dists)
-                Debug.WriteLine($"[Recognize] ID={Id}, Distance={Dist:F6}");
+            //dists.Sort((a, b) => a.Dist.CompareTo(b.Dist));
+            //foreach (var (Id, Vec, Dist) in dists)
+            //    Debug.WriteLine($"[Recognize] ID={Id}, Distance={Dist:F6}");
 
             // 2) Mesafe eşiğine takılanların içinden en yakın 3’ünü seç
             var top3 = dists
@@ -131,8 +131,8 @@ namespace Palmprint_Recognition.Recognition
                 .OrderBy(x => x.Dist)
                 .Take(3)
                 .ToList();
-            //if (top3.Count < 3)
-            //    return (null, 0f);
+            if (top3.Count < 3)
+                return (null, 0f);
 
             // 3) Oylama: en çok tekrar eden ID’yi bul
             var winnerGroup = top3
