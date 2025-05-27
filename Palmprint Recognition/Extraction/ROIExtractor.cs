@@ -30,20 +30,55 @@ namespace Palmprint_Recognition.Extraction
                 return false;
 
             // 1) Preprocess: normalize lighting and binarize
+            LightingNormalize(inputBgr);
             Mat noGlare = RemoveSpecularHighlights(inputBgr);
-            LightingNormalize(noGlare);
+            ShowBinaryImage(inputBgr, new Size(600, 600)); // Optional: for debugging
 
             // 2) Binarize and prepare mask
             Mat binaryImg = BinaryImage(noGlare);
             binaryImg = AddBorder(binaryImg, 5);
             Mat proc = binaryImg.Clone();
-            
-            using var ker = CvInvoke.GetStructuringElement(ElementShape.Rectangle, new Size(5, 5), new Point(-1, -1));
-            CvInvoke.Erode(proc, proc, ker, new Point(-1, -1), 3, BorderType.Constant, new MCvScalar(0));
-            ShowBinaryImage(proc, new Size(600, 600)); // Optional: for debugging
 
+            //FillSmallHoles(proc, maxHoleArea: 200);
+
+            using var ffMask = new Mat(
+                proc.Rows + 2,
+                proc.Cols + 2,
+                DepthType.Cv8U,
+                1);
+            ffMask.SetTo(new MCvScalar(0));
+
+            // 2) İnvert edilmiş mask
+            using var inv = new Mat();
+            CvInvoke.BitwiseNot(proc, inv);
+
+            // 3) FloodFill
+            Rectangle filledArea;
+            CvInvoke.FloodFill(
+                inv,              // IInputOutputArray image
+                ffMask,           // IInputOutputArray mask
+                new Point(0, 0),  // seed point
+                new MCvScalar(255),       // newVal
+                out filledArea,          // out Rectangle rect
+                new MCvScalar(1),        // loDiff (alt eşik farkı)
+                new MCvScalar(1),        // upDiff (üst eşik farkı)
+                Connectivity.EightConnected,
+                FloodFillType.Default);
+
+            // 4) Delikleri temsil eden kısmı yeniden invert et
+            using var holes = new Mat();
+            CvInvoke.BitwiseNot(inv, holes);
+
+            // 5) Orijinal dtMask ile birleştir
+            CvInvoke.BitwiseOr(proc, holes, proc);
+
+            using var ker = CvInvoke.GetStructuringElement(ElementShape.Rectangle, new Size(7, 7), new Point(-1, -1));
+            CvInvoke.MorphologyEx(proc, proc, MorphOp.Erode, ker, new Point(-1, -1), 6, BorderType.Constant, new MCvScalar(0));
+            //ShowBinaryImage(proc, new Size(600, 600)); // Optional: for debugging
+            //CvInvoke.MorphologyEx(proc,proc,MorphOp.Close, ker, new Point(-1, -1), 2, BorderType.Constant, new MCvScalar(0));
             // 3) Find hand contour
             VectorOfPoint? rawContour = FindLargestContour(proc);
+            
             if (rawContour == null || rawContour.Size < 3)
                 return false;
             using var contour = rawContour;
@@ -60,17 +95,23 @@ namespace Palmprint_Recognition.Extraction
 
             // 6) Compute source polygon and extract raw ROI
             Point[] srcPoints = ComputeSourcePointsScaledOffset(orderedValleys, isLeftHand);
+
             (Mat rawROI, Mat rawMask) = ExtractRawROI(inputBgr, srcPoints);
-            DrawHandFeatures(inputBgr, contour, orderedValleys, srcPoints, new Size(600, 600), 6);
+            //DrawHandFeatures(inputBgr, contour, orderedValleys, srcPoints, new Size(600, 600), 6);
 
             // 7) Compute rotation angle and align
             double theta = ComputeRotationAngle(orderedValleys, isLeftHand);
             AlignROI(rawROI, rawMask, theta, out palmROI, out dtMask);
 
+            rawROI.Dispose();
+            rawMask.Dispose();
+
             // 8 Crop align roi
             (palmROI, _) = CropToMask(palmROI, dtMask);
 
-            LightingNormalize(palmROI);
+            //LightingNormalize(palmROI);
+            CvInvoke.Resize(palmROI, palmROI, new Size(128, 128), 0, 0, Inter.Linear);
+
             dtMask = binaryImg.Clone();
             return true;
 
@@ -106,7 +147,7 @@ namespace Palmprint_Recognition.Extraction
                 int minDepth = Math.Max(10, (int)(bb.Height * 0.07));
 
                 // Y‐ekseni bandı: sadece palm dip bölgeleri (%15–%80 arası)
-                double topThresh = bb.Y + bb.Height * 0.05;
+                double topThresh = bb.Y + bb.Height * 0.15;
                 double bottomThresh = bb.Y + bb.Height * 0.80;
                 // ───────────────────────────────────────────────────────────────
 
@@ -135,7 +176,7 @@ namespace Palmprint_Recognition.Extraction
                     double ang = Math.Acos(dot /
                                 (Math.Sqrt(v1.X * v1.X + v1.Y * v1.Y) * Math.Sqrt(v2.X * v2.X + v2.Y * v2.Y)))
                                  * 180.0 / Math.PI;
-                    if (ang < 10 || ang > 120)
+                    if (ang < 15 || ang > 120)
                         continue;
 
                     valleys.Add(pt);
@@ -152,8 +193,9 @@ namespace Palmprint_Recognition.Extraction
             CvInvoke.ConvexityDefects(contour, hullIdx, defectMat);
 
             var bb = CvInvoke.BoundingRectangle(contour);
-            double topY = bb.Y + bb.Height * 0.05;
+            double topY = bb.Y + bb.Height * 0.15;
             double botY = bb.Y + bb.Height * 0.80;
+            int minDepth = Math.Max(20, (int)(bb.Height * 0.1));
 
             var list = new List<(int farIdx, int depthPix, double angle)>();
 
@@ -167,6 +209,9 @@ namespace Palmprint_Recognition.Extraction
 
                     // 1) Y-band filtresi:
                     if (pt.Y < topY || pt.Y > botY)
+                        continue;
+
+                    if (depthRaw < minDepth)
                         continue;
 
                     // 2) Açı filtresi (opsiyonel ama faydalı)
@@ -194,10 +239,6 @@ namespace Palmprint_Recognition.Extraction
 
             return valleys;
         }
-
-
-
-
 
         //private List<Point> GetValleyPoints(VectorOfPoint contour)
         //{
@@ -592,16 +633,13 @@ namespace Palmprint_Recognition.Extraction
             CvInvoke.CvtColor(image, ycc, ColorConversion.Bgr2YCrCb);
             var mask = new Mat();
             CvInvoke.InRange(ycc,
-                new ScalarArray(new MCvScalar(0, 140, 75)),
-                new ScalarArray(new MCvScalar(255, 180, 135)),
+                new ScalarArray(new MCvScalar(0, 140, 60)),
+                new ScalarArray(new MCvScalar(240, 180, 150)),
                 mask);
 
             using var kernel = CvInvoke.GetStructuringElement(ElementShape.Ellipse, new Size(7, 7), new Point(-1, -1));
             CvInvoke.MorphologyEx(mask, mask, MorphOp.Open, kernel, Point.Empty, 3, BorderType.Default, new MCvScalar());
             CvInvoke.MorphologyEx(mask, mask, MorphOp.Close, kernel, Point.Empty, 1, BorderType.Default, new MCvScalar());
-
-            // Ufak delikleri doldur
-            //FillSmallHoles(mask, maxHoleArea: 200);
 
             return mask;
         }
@@ -656,6 +694,19 @@ namespace Palmprint_Recognition.Extraction
             var contours = new VectorOfVectorOfPoint();
             CvInvoke.FindContours(mask, contours, null, RetrType.External, ChainApproxMethod.ChainApproxSimple);
             if (contours.Size == 0) return null;
+
+            double totalArea = 0, maxArea = 0;
+            for (int i = 0; i < contours.Size; i++)
+            {
+                double a = CvInvoke.ContourArea(contours[i]);
+                totalArea += a;
+                if (a > maxArea) maxArea = a;
+            }
+
+            //    Eğer en büyük kontur tüm alanın %90’ından küçükse çok parçalı demektir
+            if (maxArea / totalArea < 0.9)
+                return null;
+
             int idx = Enumerable.Range(0, contours.Size)
                          .OrderByDescending(i => CvInvoke.ContourArea(contours[i]))
                          .First();

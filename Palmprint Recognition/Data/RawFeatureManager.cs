@@ -3,10 +3,19 @@ using System.Text;
 
 namespace Palmprint_Recognition.Data
 {
+    using System;
+    using System.Collections.Generic;
+    using System.Globalization;
+    using System.IO;
+    using System.Linq;
+    using System.Text;
+
     internal class RawFeatureManager
     {
         private readonly string _filePath;
-        private readonly List<float[]> _raw = new();
+        private readonly Dictionary<string, List<float[]>> _raw = new();
+
+        public IReadOnlyDictionary<string, List<float[]>> Records => _raw;
 
         public RawFeatureManager(string filePath)
         {
@@ -21,7 +30,7 @@ namespace Palmprint_Recognition.Data
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
             if (!File.Exists(_filePath))
-                File.WriteAllText(_filePath, "");
+                File.WriteAllText(_filePath, string.Empty, Encoding.UTF8);
         }
 
         private void Load()
@@ -32,30 +41,35 @@ namespace Palmprint_Recognition.Data
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 var parts = line.Split(',');
                 var id = parts[0];
-                // Ondalık ayırıcı olarak nokta kullanan InvariantCulture ile parse ediyoruz
                 var vec = parts
                     .Skip(1)
                     .Select(tok => float.Parse(tok, CultureInfo.InvariantCulture))
                     .ToArray();
-                _raw.Add(vec);
+
+                if (!_raw.ContainsKey(id))
+                    _raw[id] = new List<float[]>();
+                _raw[id].Add(vec);
             }
         }
 
+        /// <summary>
+        /// Yeni bir raw vektörü kayıt eder. 
+        /// Aynı ID için belleğe ekler ve dosyaya append yazar.
+        /// </summary>
         public void SaveNew(string id, float[] feats)
         {
-            // Listeye ekle (isteğe bağlı)
-            _raw.Add(feats);
+            // 1) Belleğe ekle
+            if (!_raw.ContainsKey(id))
+                _raw[id] = new List<float[]>();
+            _raw[id].Add(feats);
 
-            // Dosyayı baştan yaz: böylece eski raw satırlar kalmaz
-            using var sw = new StreamWriter(_filePath, append: false, encoding: Encoding.UTF8);
-            foreach (var kv in _raw)
-            {
-                string line = id + "," +
-                              string.Join(",", kv.Select(f => f.ToString("G6", CultureInfo.InvariantCulture)));
-                sw.WriteLine(line);
-            }
+            // 2) Dosyaya append et
+            using var sw = new StreamWriter(_filePath, append: true, encoding: Encoding.UTF8);
+            var line = id + "," +
+                       string.Join(",", feats
+                         .Select(f => f.ToString("G6", CultureInfo.InvariantCulture)));
+            sw.WriteLine(line);
         }
-
-        public IReadOnlyList<float[]> AllRaw => _raw;
     }
+
 }

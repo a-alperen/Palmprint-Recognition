@@ -39,6 +39,44 @@ namespace Palmprint_Recognition.Extraction
             }
             return feats;
         }
+        public float[] ComputeLbpFeatures(Mat roi)
+        {
+            using var gray = new Mat();
+            CvInvoke.CvtColor(roi, gray, ColorConversion.Bgr2Gray);
+
+            int rows = gray.Rows;
+            int cols = gray.Cols;
+
+            byte[] imgData = new byte[rows * cols];
+            gray.CopyTo(imgData);
+
+            int index(int y, int x) => y * cols + x;
+
+            var lbpHist = new float[256];
+
+            for (int y = 1; y < rows - 1; y++)
+            {
+                for (int x = 1; x < cols - 1; x++)
+                {
+                    byte center = imgData[index(y, x)];
+                    int code = 0;
+
+                    code |= (imgData[index(y - 1, x - 1)] >= center ? 1 : 0) << 7;
+                    code |= (imgData[index(y - 1, x)] >= center ? 1 : 0) << 6;
+                    code |= (imgData[index(y - 1, x + 1)] >= center ? 1 : 0) << 5;
+                    code |= (imgData[index(y, x + 1)] >= center ? 1 : 0) << 4;
+                    code |= (imgData[index(y + 1, x + 1)] >= center ? 1 : 0) << 3;
+                    code |= (imgData[index(y + 1, x)] >= center ? 1 : 0) << 2;
+                    code |= (imgData[index(y + 1, x - 1)] >= center ? 1 : 0) << 1;
+                    code |= (imgData[index(y, x - 1)] >= center ? 1 : 0);
+
+                    lbpHist[code]++;
+                }
+            }
+
+            return lbpHist;
+        }
+
         /// <summary>
         /// Standard L2 normalize a vector to unit length.
         /// </summary>
@@ -56,7 +94,18 @@ namespace Palmprint_Recognition.Extraction
             }
             return vec;
         }
-        
+        public float[] ComputeHybridFeatures(Mat roi, int blockSize)
+        {
+            var dctFeats = ComputeDctFeatures(roi, blockSize);
+            var lbpFeats = ComputeLbpFeatures(roi);
+
+            // Concatenate
+            var hybridFeats = new float[dctFeats.Length + lbpFeats.Length];
+            dctFeats.CopyTo(hybridFeats, 0);
+            lbpFeats.CopyTo(hybridFeats, dctFeats.Length);
+
+            return L2Normalize(hybridFeats);
+        }
         ///// <summary>
         ///// Select top features by discriminant power (between-class / within-class).
         ///// </summary>

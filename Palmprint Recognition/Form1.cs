@@ -28,9 +28,10 @@ namespace Palmprint_Recognition
         private Mat? _roi;
         private Mat? _roiLogin;
 
-        private readonly int _blockSize = 12;
+        private readonly int _blockSize = 8;
         private readonly float _distanceThreshold = 0.15f;
         private readonly float _similarityThreshold = 0.85f;
+        private string _datasetPath = string.Empty;
         public Form1()
         {
             InitializeComponent();
@@ -69,7 +70,7 @@ namespace Palmprint_Recognition
             if (!_roiExt.TryExtract(_inputMat, out _roi, out _)) { MessageBox.Show("ROI alınamadı."); return; }
 
             RegisterROIPictureBox.Image = _roi.ToBitmap();
-            //LoginROIPictureBox.Image = _mask.ToBitmap();
+
 
         }
         /// <summary>
@@ -104,7 +105,9 @@ namespace Palmprint_Recognition
         private void button2_Click(object sender, EventArgs e)
         {
             if (_roiLogin == null || _loginMat == null) { MessageBox.Show("Önce giriş görüntüsü yükleyin."); return; }
-            var (id, percentage) = _recognizer.Recognize(_roiLogin, distanceThreshold: _distanceThreshold, similarityThreshold: _similarityThreshold);
+            var feat = _featExt.ComputeDctFeatures(_roiLogin, _blockSize);
+            feat = _featExt.L2Normalize(feat);
+            var (id, percentage) = _recognizer.Recognize(feat, _distanceThreshold, _similarityThreshold);
             if (id == null)
             {
                 MessageBox.Show("Kayıt bulunamadı.");
@@ -114,7 +117,7 @@ namespace Palmprint_Recognition
                 MessageBox.Show($"Hoş geldiniz, {id}!");
                 RecognitionLabel.Text = $"{id} ile benzerlik yüzdesi %{percentage}";
             }
-                        
+
         }
         /// <summary>
         /// Enroll
@@ -126,10 +129,105 @@ namespace Palmprint_Recognition
             if (_inputMat == null) { MessageBox.Show("Önce görüntü yükleyin."); return; }
             var id = userIDTextBox.Text.Trim();
             if (string.IsNullOrEmpty(id)) { MessageBox.Show("ID girin."); return; }
+            if (_roi == null) return;
 
-            try { _recognizer.Enroll(id, _roi); MessageBox.Show($"'{id}' başarıyla kaydedildi."); RefreshIdList(); }
+            var raw = _featExt.ComputeDctFeatures(_roi, _blockSize);
+            var feat = _featExt.L2Normalize(raw);
+
+            try { _recognizer.Enroll(id, raw, feat); MessageBox.Show($"'{id}' başarıyla kaydedildi."); RefreshIdList(); }
             catch (Emgu.CV.Util.CvException cvEx) { MessageBox.Show($"OpenCV hatası: {cvEx.Message}"); }
             catch (Exception ex) { MessageBox.Show(ex.Message); }
+        }
+        private void EvaluateButton_Click(object sender, EventArgs e)
+        {
+            using var fbd = new FolderBrowserDialog();
+
+            if (fbd.ShowDialog() == DialogResult.OK)
+            {
+                // Seçilen klasörün tam yolu:
+                _datasetPath = fbd.SelectedPath;
+
+                var results = EvaluationService.Run(
+                    datasetPath: _datasetPath,
+                    trainRatio: 0.5,
+                    blockSize: 8,
+                    distThreshold: 0.15f,
+                    simThreshold: 0.85f);
+
+                // 1) CSV dosyasının tam yolunu oluştur
+                var csvPath = Path.Combine(_datasetPath, "far_frr.csv");
+
+                // 2) Dosya varsa üzerine yazılıp silinsin
+                if (File.Exists(csvPath))
+                    File.Delete(csvPath);
+
+                // 3) StreamWriter ile başlık satırını ve verileri yaz
+                using (var sw = new StreamWriter(csvPath))
+                {
+                    sw.WriteLine("Threshold;FAR;FRR");
+                    foreach (var r in results)
+                        sw.WriteLine($"{r.Threshold:F2};{r.FAR:F3};{r.FRR:F3}");
+                }
+
+                // 4) Bilgilendirme
+                MessageBox.Show($"FAR/FRR değerleri '{csvPath}' dosyasına kaydedildi.");
+
+                // Alt klasörleri alıp örnek logla:
+                //var subDirs = Directory.GetDirectories(_datasetPath);
+                //foreach (var dir in subDirs)
+                //    Debug.WriteLine(dir);
+
+            }
+        }
+        private void ExtractROIButton_Click(object sender, EventArgs e)
+        {
+            using var fbd = new FolderBrowserDialog();
+
+            if(fbd.ShowDialog() == DialogResult.OK)
+            {
+                var root = fbd.SelectedPath;
+
+                if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
+                {
+                    MessageBox.Show("Lütfen geçerli bir dataset klasörü seçin.");
+                    return;
+                }
+
+                var roiRoot = Path.Combine(root, "ROI");
+                if (Directory.Exists(roiRoot))
+                    Directory.Delete(roiRoot, recursive: true);
+
+                var roiExt = new ROIExtractor();
+
+                // 1) Tüm resim dosyalarını topla
+                var files = Directory.GetFiles(root, "*.*", SearchOption.AllDirectories)
+                    .Where(f => {
+                        var ext = Path.GetExtension(f).ToLower();
+                        return ext == ".png" || ext == ".bmp" || ext == ".jpg";
+                    })
+                    .ToList();
+
+                // 2) Paralel olarak ROI çıkarma ve kaydetme
+                Parallel.ForEach(files,
+                    new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+                    file =>
+                    {
+                        using var img = CvInvoke.Imread(file, ImreadModes.Color);
+                        if (!roiExt.TryExtract(img, out Mat roi, out _))
+                            return;
+
+                        // Çıkışı kaydederken orijinal klasör yapısını koru
+                        var relPath = Path.GetRelativePath(root, file);
+                        var outPath = Path.Combine(roiRoot, relPath);
+                        Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+
+                        CvInvoke.Imwrite(outPath, roi);
+                        roi.Dispose();
+                    });
+
+                MessageBox.Show($"Tüm ROI’ler önbelleğe alındı:\n{roiRoot}");
+            }
+            
         }
         private void RefreshIdList() { listBoxIds.Items.Clear(); listBoxIds.Items.AddRange(_db.Records.Keys.ToArray()); }
 
@@ -153,5 +251,6 @@ namespace Palmprint_Recognition
 
         }
 
+        
     }
 }

@@ -6,14 +6,16 @@ namespace Palmprint_Recognition.Data
     internal class DatabaseManager
     {
         private readonly string _filePath;
-        private readonly Dictionary<string, float[]> _db = new();
+        private readonly Dictionary<string, List<float[]>> _db = new();
 
-        public IReadOnlyDictionary<string, float[]> Records => _db;
+        // Artık her ID'nin birden çok feature listesi var
+        public IReadOnlyDictionary<string, List<float[]>> Records => _db;
 
         public DatabaseManager(string filePath)
         {
             _filePath = filePath;
             EnsureFileExists();
+            Load();
         }
 
         private void EnsureFileExists()
@@ -22,7 +24,7 @@ namespace Palmprint_Recognition.Data
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
             if (!File.Exists(_filePath))
-                File.WriteAllText(_filePath, string.Empty);
+                File.WriteAllText(_filePath, string.Empty, Encoding.UTF8);
         }
 
         public void Load()
@@ -33,29 +35,35 @@ namespace Palmprint_Recognition.Data
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 var parts = line.Split(',');
                 var id = parts[0];
-                // Ondalık ayırıcı olarak nokta kullanan InvariantCulture ile parse ediyoruz
                 var vec = parts
                     .Skip(1)
                     .Select(tok => float.Parse(tok, CultureInfo.InvariantCulture))
                     .ToArray();
-                _db[id] = vec;
+
+                if (!_db.ContainsKey(id))
+                    _db[id] = new List<float[]>();
+                _db[id].Add(vec);
             }
         }
 
+        /// <summary>
+        /// Yeni bir raw veya normalize edilmiş vektörü kayıt eder.
+        /// Aynı ID için birden çok satır dosyaya append edilir.
+        /// Bellekte de listeye eklenir.
+        /// </summary>
         public void Save(string id, float[] features)
         {
-            // Belleğe ekle ya da güncelle
-            _db[id] = features;
+            // 1) Belleğe ekle
+            if (!_db.ContainsKey(id))
+                _db[id] = new List<float[]>();
+            _db[id].Add(features);
 
-            // Dosyayı baştan yaz: böylece eski raw satırlar kalmaz
-            using var sw = new StreamWriter(_filePath, append: false, encoding: Encoding.UTF8);
-            foreach (var kv in _db)
-            {
-                string line = kv.Key + "," +
-                              string.Join(",", kv.Value
-                                                .Select(f => f.ToString("G6", CultureInfo.InvariantCulture)));
-                sw.WriteLine(line);
-            }
+            // 2) Dosyaya append et
+            using var sw = new StreamWriter(_filePath, append: true, encoding: Encoding.UTF8);
+            var line = id + "," +
+                       string.Join(",", features
+                           .Select(f => f.ToString("G6", CultureInfo.InvariantCulture)));
+            sw.WriteLine(line);
         }
     }
 }

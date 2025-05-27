@@ -22,90 +22,193 @@ namespace Palmprint_Recognition.Recognition
         }
 
         /// <summary>
-        /// Enroll a new user:
-        ///   1) Extract raw DCT features and save to raw database
-        ///   2) L2-normalize features and save to recognition database
+        /// Enrolls a new palmprint by saving its raw and normalized features.
         /// </summary>
-        public void Enroll(string id, Mat colorROI)
+        /// <param name="id"></param>
+        /// <param name="rawFeats"></param>
+        /// <param name="normFeats"></param>
+        public void Enroll(string id, float[] rawFeats, float[] normFeats)
         {
-            using var stdROI = new Mat();
-            CvInvoke.Resize(colorROI, stdROI, new Size(128, 128), 0, 0, Inter.Linear);
-
-            // 1) Raw DCT
-            float[] rawFeats = _featExt.ComputeDctFeatures(stdROI, _blockSize);
+            // Save database "palmdb.csv" for normalized features and "rawdb.csv" for raw features
             _rawFtManager.SaveNew(id, rawFeats);
-
-            // 2) Normalise and save
-            float[] normed = _featExt.L2Normalize((float[])rawFeats.Clone());
-            _dbManager.Save(id, normed);
+            _dbManager.Save(id, normFeats);
         }
 
         /// <summary>
-        /// En yakın ID’yi ve cosine benzerlik skorunu döner.
+        /// Recognizes a palmprint by comparing its features against the database with euclidean distance and cosine similarity.
         /// </summary>
-        /// <param name="colorROI">Giriş ROI</param>
-        /// <param name="threshold">Euclidean eşiği (isteğe bağlı, mesela 0.6f)</param>
-        /// <returns>(ID ve skoru) eşiğin altındaysa ID, değilse null ve 0</returns>
-        public (string? Id, float Similarity) Recognize(Mat colorROI, float distanceThreshold, float similarityThreshold)
+        /// <param name="feats"></param>
+        /// <param name="distanceThreshold"></param>
+        /// <param name="similarityThreshold"></param>
+        /// <returns></returns>
+        //public (string? Id, float Similarity) Recognize1(float[] feats, float distanceThreshold, float similarityThreshold)
+        //{
+
+        //    // Compute Euclidean distances to all database vectors
+        //    var distances = new List<(string Id, float Dist)>();
+        //    foreach (var kv in _dbManager.Records)
+        //    {
+        //        var dbVec = kv.Value;
+        //        float distSq = 0f;
+        //        for (int i = 0; i < feats.Length; i++)
+        //        {
+        //            float d = feats[i] - dbVec[i];
+        //            distSq += d * d;
+        //        }
+        //        float dist = (float)Math.Sqrt(distSq);
+        //        distances.Add((kv.Key, dist));
+        //    }
+        //    // Log all distances for debugging
+        //    //distances.Sort((a, b) => a.Dist.CompareTo(b.Dist));
+        //    //foreach (var (Id, Dist) in distances)
+        //    //    Debug.WriteLine($"[Recognize] ID={Id}, Distance={Dist:F6}");
+
+        //    // 4) Filter out everyone beyond the distanceThreshold,
+        //    //    then take top-3 closest candidates
+        //    var topCandidates = distances
+        //        .Where(x => x.Dist <= distanceThreshold)
+        //        .OrderBy(x => x.Dist)
+        //        .Take(3)
+        //        .ToList();
+
+        //    // If nobody is within the distance bound, reject immediately
+        //    if (topCandidates.Count == 0)
+        //        return (null, 0f);
+
+        //    // 5) For each of the top candidates compute cosine similarity,
+        //    //    and accept the first one above similarityThreshold
+        //    foreach (var candidate in topCandidates)
+        //    {
+        //        float[] dbVec = _dbManager.Records[candidate.Id];
+        //        float dot = 0f;
+        //        for (int i = 0; i < feats.Length; i++)
+        //            dot += feats[i] * dbVec[i];
+
+        //        // dot is in [0,1] after L2-normalization,
+        //        // multiply by 100 to get percentage
+        //        float similarity = dot * 100f;
+        //        //Debug.WriteLine($"[Recognize] Candidate={candidate.Id}, EuclidDist={candidate.Dist:F4}, CosineSim={similarity:F2}%");
+
+        //        if (similarity >= similarityThreshold)
+        //            return (candidate.Id, similarity);
+        //    }
+
+        //    // 6) None of the top candidates passed the cosine check → reject
+        //    return (null, 0f);
+        //}
+        public (string? Id, float Similarity) Recognize(
+        float[] feat,
+        float distThreshold,
+        float simThreshold)
         {
-            // 1) Standardize ROI size
-            using var stdROI = new Mat();
-            CvInvoke.Resize(colorROI, stdROI, new Size(128, 128), 0, 0, Inter.Linear);
-
-            // 2) Extract DCT features and L2-normalize
-            float[] rawFeats = _featExt.ComputeDctFeatures(stdROI, _blockSize);
-            float[] queryVec = _featExt.L2Normalize(rawFeats);
-
-            // 3) Compute Euclidean distances to all database vectors
-            var distances = new List<(string Id, float Dist)>();
+            // 1) Tüm kayıtlı vektörler için (ID, vec, euclidDist) listesi oluştur
+            var dists = new List<(string Id, float[] Vec, float Dist)>();
             foreach (var kv in _dbManager.Records)
             {
-                var dbVec = kv.Value;
-                float distSq = 0f;
-                for (int i = 0; i < queryVec.Length; i++)
+                string id = kv.Key;
+                foreach (var dbVec in kv.Value)
                 {
-                    float d = queryVec[i] - dbVec[i];
-                    distSq += d * d;
+                    // Öklid mesafesi
+                    float sum = 0f;
+                    for (int i = 0; i < feat.Length; i++)
+                    {
+                        float d = feat[i] - dbVec[i];
+                        sum += d * d;
+                    }
+                    float dist = (float)Math.Sqrt(sum);
+                    dists.Add((id, dbVec, dist));
                 }
-                float dist = (float)Math.Sqrt(distSq);
-                distances.Add((kv.Key, dist));
             }
+
             // Log all distances for debugging
-            distances.Sort((a, b) => a.Dist.CompareTo(b.Dist));
-            foreach (var (Id, Dist) in distances)
+            dists.Sort((a, b) => a.Dist.CompareTo(b.Dist));
+            foreach (var (Id, Vec, Dist) in dists)
                 Debug.WriteLine($"[Recognize] ID={Id}, Distance={Dist:F6}");
 
-            // 4) Filter out everyone beyond the distanceThreshold,
-            //    then take top-3 closest candidates
+            // 2) Mesafe eşiğine takılanların içinden en yakın 3’ünü seç
+            var top3 = dists
+                .Where(x => x.Dist <= distThreshold)
+                .OrderBy(x => x.Dist)
+                .Take(3)
+                .ToList();
+            //if (top3.Count < 3)
+            //    return (null, 0f);
+
+            // 3) Oylama: en çok tekrar eden ID’yi bul
+            var winnerGroup = top3
+                .GroupBy(x => x.Id)
+                .OrderByDescending(g => g.Count())
+                .First();
+            string winnerId = winnerGroup.Key;
+
+            if (!winnerGroup.Any())
+                return (null, 0f);
+
+            // 4) Kosinüs benzerliğini hesapla (feat ve dbVec’ler L2-normalize edildiği varsayılarak)
+            float bestCos = 0f;
+            foreach (var candidate in top3.Where(x => x.Id == winnerId))
+            {
+                float dot = 0f;
+                for (int i = 0; i < feat.Length; i++)
+                    dot += feat[i] * candidate.Vec[i];
+                bestCos = Math.Max(bestCos, dot * 100f);  // % cinsine çevirmek için 100×
+            }
+
+            // 5) Benzerlik eşiğini kontrol et
+            if (bestCos < simThreshold)
+                return (null, 0f);
+
+            // Kabul ediliyor
+            return (winnerId, bestCos);
+        }
+
+        public (string? Id, float Similarity) Recognize1(
+        float[] feats,
+        float distanceThreshold,
+        float similarityThreshold)
+        {
+            // 1) Tüm kayıtlı vektörler için (ID, vektör, mesafe) üçlüsü oluştur
+            var distances = new List<(string Id, float[] Vec, float Dist)>();
+            foreach (var kv in _dbManager.Records)
+            {
+                string id = kv.Key;
+                foreach (var dbVec in kv.Value)
+                {
+                    float distSq = 0f;
+                    for (int i = 0; i < feats.Length; i++)
+                    {
+                        float d = feats[i] - dbVec[i];
+                        distSq += d * d;
+                    }
+                    float dist = (float)Math.Sqrt(distSq);
+                    distances.Add((id, dbVec, dist));
+                }
+            }
+
+            // 2) Eşiği aşmayanların en yakın 3 tanesini seç
             var topCandidates = distances
                 .Where(x => x.Dist <= distanceThreshold)
                 .OrderBy(x => x.Dist)
                 .Take(3)
                 .ToList();
 
-            // If nobody is within the distance bound, reject immediately
             if (topCandidates.Count == 0)
                 return (null, 0f);
-            
-            // 5) For each of the top candidates compute cosine similarity,
-            //    and accept the first one above similarityThreshold
+
+            // 3) Ön elemeden geçen her aday vektör ile kosinüs benzerliğini hesapla
             foreach (var candidate in topCandidates)
             {
-                float[] dbVec = _dbManager.Records[candidate.Id];
                 float dot = 0f;
-                for (int i = 0; i < queryVec.Length; i++)
-                    dot += queryVec[i] * dbVec[i];
+                for (int i = 0; i < feats.Length; i++)
+                    dot += feats[i] * candidate.Vec[i];
 
-                // dot is in [0,1] after L2-normalization,
-                // multiply by 100 to get percentage
-                float similarity = dot * 100f;
-                Debug.WriteLine($"[Recognize] Candidate={candidate.Id}, EuclidDist={candidate.Dist:F4}, CosineSim={similarity:F2}%");
+                float similarity = dot * 100f; // % cinsinden
 
                 if (similarity >= similarityThreshold)
                     return (candidate.Id, similarity);
             }
 
-            // 6) None of the top candidates passed the cosine check → reject
+            // 4) Hiçbiri eşik geçemedi → reddet
             return (null, 0f);
         }
 
